@@ -61,8 +61,11 @@ class AdaptivePatches(nn.Module):
             h_mid, w_mid = H // 2, W // 2
             h_quarter, w_quarter = H // 4, W // 4
             coords = [
-                (h_quarter, 0, 3*h_quarter, W),  # 水平条
-                (0, w_quarter, H, 3*w_quarter)   # 垂直条
+                (h_quarter, w_quarter, 3*h_quarter, 3*w_quarter),  # 中心
+                (0, w_quarter, h_quarter, 3*w_quarter),              # 上部
+                (3*h_quarter, w_quarter, H, 3*w_quarter),            # 下部
+                (h_quarter, 0, 3*h_quarter, w_quarter),              # 左部
+                (h_quarter, 3*w_quarter, 3*h_quarter, W)             # 右部
             ]
             
         elif self.layout_type == 'F':  # 四等分
@@ -79,7 +82,9 @@ class AdaptivePatches(nn.Module):
             h_quarter, w_quarter = H // 4, W // 4
             coords = [
                 (h_quarter, w_quarter, 3*h_quarter, 3*w_quarter),  # 中心
-                (0, w_quarter, H, 3*w_quarter)                      # 垂直条
+                (0, 0, H, w_mid),                                  # 左半部分
+                (0, w_mid, H, W),                                  # 右半部分
+                (0, w_quarter, H, 3*w_quarter)                     # 垂直中央条
             ]
             
         elif self.layout_type == 'H':  # 中心水平分块
@@ -87,7 +92,7 @@ class AdaptivePatches(nn.Module):
             h_quarter = H // 4
             coords = [(h_quarter, 0, 3*h_quarter, W)]
             
-        else:  # 'I': 四肢分块
+        elif self.layout_type == 'I':  # 四肢分块
             # 计算四肢区域的尺寸和位置
             w_upper = int(W * 0.2)  # 上肢宽度为20%
             w_lower = int(W * 0.3)  # 下肢宽度为30%
@@ -101,6 +106,20 @@ class AdaptivePatches(nn.Module):
                 (y_upper, W - w_upper, y_upper + h_upper, W),            # 右上肢
                 (y_lower, 0, y_lower + h_lower, w_lower),                # 左下肢
                 (y_lower, W - w_lower, y_lower + h_lower, W)             # 右下肢
+            ]
+            
+        elif self.layout_type == 'J':  # 上下二等分，左右三等分
+            # 计算水平中点和垂直三等分点
+            h_mid = H // 2
+            w1, w2 = W // 3, 2 * W // 3
+            
+            coords = [
+                (0, 0, h_mid, w1),          # 上左
+                (0, w1, h_mid, w2),         # 上中
+                (0, w2, h_mid, W),          # 上右
+                (h_mid, 0, H, w1),          # 下左
+                (h_mid, w1, H, w2),         # 下中
+                (h_mid, w2, H, W)           # 下右
             ]
             
         return coords
@@ -117,8 +136,16 @@ class AdaptivePatches(nn.Module):
         coords = self.layout_generator(H, W)
         
         patches = []
+        # 计算所有patch的平均尺寸
+        patch_sizes = [(y2-y1, x2-x1) for y1, x1, y2, x2 in coords]
+        avg_h = sum(h for h, w in patch_sizes) // len(patch_sizes)
+        avg_w = sum(w for h, w in patch_sizes) // len(patch_sizes)
+        
         for y1, x1, y2, x2 in coords:
             patch = x[:, :, y1:y2, x1:x2]
+            # 使用双线性插值调整patch尺寸
+            if patch.shape[2:] != (avg_h, avg_w):
+                patch = F.interpolate(patch, size=(avg_h, avg_w), mode='bilinear', align_corners=False)
             patches.append(patch)
             
         # 堆叠所有patches
@@ -144,6 +171,10 @@ class AdaptivePatches(nn.Module):
         # 将每个patch放回原位置并累加
         for i, (y1, x1, y2, x2) in enumerate(coords):
             patch = patches[:, i]
+            # 调整patch尺寸以匹配目标区域
+            target_h, target_w = y2-y1, x2-x1
+            if patch.shape[2:] != (target_h, target_w):
+                patch = F.interpolate(patch, size=(target_h, target_w), mode='bilinear', align_corners=False)
             merged[:, :, y1:y2, x1:x2] += patch
             weights[:, :, y1:y2, x1:x2] += 1.0
             
